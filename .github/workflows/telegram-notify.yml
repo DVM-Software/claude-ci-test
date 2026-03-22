@@ -1,0 +1,49 @@
+name: Notify Telegram on CI Result
+
+on:
+  workflow_run:
+    # Explicit names only — do NOT use "*" (causes infinite self-trigger loop)
+    workflows: ["CI", "Tests", "Build", "Deploy", "Lint", "Test"]
+    types: [completed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send authenticated Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HMAC_SECRET: ${{ secrets.TELEGRAM_HMAC_SECRET }}
+        run: |
+          STATUS="${{ github.event.workflow_run.conclusion }}"
+          WORKFLOW="${{ github.event.workflow_run.name }}"
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          URL="${{ github.event.workflow_run.html_url }}"
+          REPO="${{ github.repository }}"
+
+          EMOJI="✅"; [ "$STATUS" != "success" ] && EMOJI="❌"
+          PAYLOAD="${REPO}:${SHA}:${STATUS}"
+          SIG=$(echo -n "${PAYLOAD}" | openssl dgst -sha256 -hmac "${HMAC_SECRET}" | awk '{print $2}')
+
+          python3 - <<PYEOF
+          import urllib.request, urllib.parse, os
+          bot_token = os.environ['BOT_TOKEN']
+          chat_id = os.environ['CHAT_ID']
+          text = (
+              "${EMOJI} <b>${WORKFLOW}</b> on <code>${BRANCH}</code> (${SHORT_SHA})\n"
+              "Repo: <code>${REPO}</code> — ${STATUS^^}\n"
+              "<a href='${URL}'>View run</a>\n"
+              "sig:${SIG}"
+          )
+          data = urllib.parse.urlencode({
+              'chat_id': chat_id, 'text': text,
+              'parse_mode': 'HTML', 'disable_web_page_preview': 'true'
+          }).encode()
+          urllib.request.urlopen(
+              urllib.request.Request(
+                  f'https://api.telegram.org/bot{bot_token}/sendMessage', data=data)
+          )
+          PYEOF
